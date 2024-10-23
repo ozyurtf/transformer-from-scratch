@@ -135,10 +135,6 @@ class SelfAttention(nn.Module):
         nn.init.uniform_(self.linear2.weight, -c2, c2)
         nn.init.uniform_(self.linear3.weight, -c3, c3)   
             
-        ##########################################################################
-        #               END OF YOUR CODE                                         #
-        ##########################################################################
-
     def forward(self, query: Tensor, key: Tensor, value: Tensor, mask: Tensor = None) -> Tensor:
 
         """
