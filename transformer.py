@@ -15,12 +15,10 @@ def generate_token_dict(vocab):
             and value as a unique integer value
     """
     token_dict = {}
-
     i = 0
     for word in vocab: 
         token_dict[word] = i
         i+=1
-        
     return token_dict
 
 
@@ -59,7 +57,6 @@ def prepocess_input_sequence(input_str: str, token_dict: dict, spc_tokens: list)
               for digit in word: 
                   val = token_dict[digit]
                   out.append(val)                   
-
     return out
 
 
@@ -72,7 +69,7 @@ def scaled_dot_product(query: Tensor, key: Tensor, value: Tensor, mask: Tensor =
     multiplication to find the final output.
 
     args:
-        query: a Tensor of shape (N,K, M) where N is the batch size, K is the
+        query: a Tensor of shape (N, K, M) where N is the batch size, K is the
             sequence length and M is the sequence embeding dimension
 
         key:  a Tensor of shape (N, K, M) where N is the batch size, K is the
@@ -95,10 +92,7 @@ def scaled_dot_product(query: Tensor, key: Tensor, value: Tensor, mask: Tensor =
 
     """
 
-    _, _, M = query.shape
-    y = None
-    weights_softmax = None
-    
+    _, _, M = query.shape    
     similarities = torch.bmm(query, key.transpose(1, 2)) / torch.sqrt(torch.tensor(M))
 
     if mask is not None:
@@ -106,11 +100,11 @@ def scaled_dot_product(query: Tensor, key: Tensor, value: Tensor, mask: Tensor =
         for n in range(N): 
             for k1 in range(K): 
                 for k2 in range(K):
-                    similarities[n, k1, k2] = -1e9
+                    if mask[n, k1, k2] == True:
+                        similarities[n, k1, k2] = -1e9
         
-    weights_softmax = torch.softmax(similarities, dim = 2) 
-    y = torch.bmm(weights_softmax, value) 
-
+    weights_softmax = torch.softmax(similarities, dim = 2) # N, K, K
+    y = torch.bmm(weights_softmax, value) # N, K, M
     return y, weights_softmax
 
 
@@ -129,23 +123,21 @@ class SelfAttention(nn.Module):
             dim_v: an int value for output dimension for value vectors
 
         """
-        self.q = None 
-        self.k = None 
-        self.v = None 
-        self.weights_softmax = None
-
-        self.linear_transformation1 = nn.Linear(dim_in, dim_q)
-        self.linear_transformation2 = nn.Linear(dim_in, dim_q)
-        self.linear_transformation3 = nn.Linear(dim_in, dim_v)
+        self.linear1 = nn.Linear(dim_in, dim_q)
+        self.linear2 = nn.Linear(dim_in, dim_q)
+        self.linear3 = nn.Linear(dim_in, dim_v)
 
         c1 = torch.sqrt(torch.tensor(6.) / (dim_in + dim_q))
         c2 = torch.sqrt(torch.tensor(6.) / (dim_in + dim_q))
         c3 = torch.sqrt(torch.tensor(6.) / (dim_in + dim_v))
 
-        self.linear_transformation1.weights = torch.FloatTensor(dim_in, dim_q).uniform_(0, c1)
-        self.linear_transformation2.weights = torch.FloatTensor(dim_in, dim_q).uniform_(0, c2)
-        self.linear_transformation3.weights = torch.FloatTensor(dim_in, dim_v).uniform_(0, c3)
-
+        nn.init.uniform_(self.linear1.weight, -c1, c1)
+        nn.init.uniform_(self.linear2.weight, -c2, c2)
+        nn.init.uniform_(self.linear3.weight, -c3, c3)   
+            
+        ##########################################################################
+        #               END OF YOUR CODE                                         #
+        ##########################################################################
 
     def forward(self, query: Tensor, key: Tensor, value: Tensor, mask: Tensor = None) -> Tensor:
 
@@ -160,12 +152,12 @@ class SelfAttention(nn.Module):
         return:
             y: Tensor of shape (N, K, dim_v)
         """
-        self.q = self.linear_transformation1(query)
-        self.k = self.linear_transformation2(key)
-        self.v = self.linear_transformation3(value)
+
+        self.q = self.linear1(query)
+        self.k = self.linear2(key)
+        self.v = self.linear3(value)
         
         y, self.weights_softmax = scaled_dot_product(self.q, self.k, self.v)
-    
         return y
 
 
@@ -189,7 +181,7 @@ class MultiHeadAttention(nn.Module):
             dim_out: int value specifying the output dimension of the complete 
                 MultiHeadAttention block
 
-        NOTE: Here, when we say dimension, we mean the dimesnion of the embeddings.
+        NOTE: Here, when we say dimension, we mean the dimension of the embeddings.
               In Transformers the input is a tensor of shape (N, K, M), here N is
               the batch size , K is the sequence length and M is the size of the
               input embeddings. As the sequence length(K) and number of batches(N)
@@ -201,13 +193,15 @@ class MultiHeadAttention(nn.Module):
         dim_q = dim_out
         dim_k = dim_out
         dim_v = dim_out
+
+        self.heads = nn.ModuleList(
+          [SelfAttention(dim_in, dim_q, dim_v) for i in range(num_heads)]
+          )
+        self.linear = nn.Linear(num_heads*dim_out, dim_in)
         
         c = torch.sqrt(torch.tensor(6.) / (num_heads*dim_out + dim_in))
+        nn.init.uniform_(self.linear.weight, -c, c)
 
-        self.multiple_self_attention = nn.ModuleList([SelfAttention(dim_in, dim_q, dim_v) for i in range(num_heads)])
-        self.linear_transformation = nn.Linear(num_heads*dim_out, dim_in)
-        self.linear_transformation.weights = torch.FloatTensor(num_heads*dim_out, dim_in).uniform_(0, c)
-        
     def forward(self, query: Tensor, key: Tensor, value: Tensor, mask: Tensor = None) -> Tensor:
 
         """
@@ -235,12 +229,12 @@ class MultiHeadAttention(nn.Module):
         """
 
         output = []
-        for self_attention in self.multiple_self_attention:
+        for self_attention in self.heads:
             x = self_attention.forward(query, key, value)        
             output.append(x)
         
         output_concat = torch.concat(output, dim = 2)
-        y = self.linear_transformation.forward(output_concat)
+        y = self.linear.forward(output_concat)
 
         return y
 
@@ -250,25 +244,23 @@ class LayerNormalization(nn.Module):
         super().__init__()
         """
         The class implements the Layer Normalization for Linear layers in 
-        Transformers.  Unlike BathcNorm ,it estimates the normalization statistics 
+        Transformers.  Unlike BatchNorm, it estimates the normalization statistics 
         for each element present in the batch and hence does not depend on the  
         complete batch.
         The input shape will look something like (N, K, M) where N is the batch 
         size, K is the sequence length and M is the sequence length embedding. We 
-        compute the  mean with shape (N, K) and standard deviation with shape (N, K) 
+        compute the mean with shape (N, K) and standard deviation with shape (N, K) 
         and use them to normalize each sequence.
         
         args:
             emb_dim: int representing embedding dimension
             epsilon: float value
-
         """
 
-        self.epsilon = epsilon        
-        self.gamma = torch.ones(emb_dim)
-        self.beta = torch.zeros(emb_dim)
-        self.emb_dim = emb_dim
-        
+        self.epsilon = epsilon
+        self.gamma = nn.Parameter(torch.ones(emb_dim)) 
+        self.beta = nn.Parameter(torch.zeros(emb_dim)) 
+
     def forward(self, x: Tensor):
         """
         An implementation of the forward pass of the Layer Normalization.
@@ -280,20 +272,15 @@ class LayerNormalization(nn.Module):
         returns:
             y: a Tensor of shape (N, K, M) or (N, K) after applying layer
                 normalization
-
         """
-        N = x.shape[0]
-        y = torch.zeros_like(x)
 
-        for n in range(N): 
-            x_n = x[n]
-            mean = torch.mean(x_n, dim = -1)
-            var = torch.sum((x_n - mean)**2)/self.emb_dim
-            std = torch.sqrt(var)
-            scaled = (x_n - mean) / std
-            y[n, :] = self.gamma * scaled + self.beta
-
-        return y
+        mean = x.mean(dim=-1, keepdim=True)  # Shape: (N, K, 1)
+        var = ((x - mean) ** 2).mean(dim=-1, keepdim=True)  # Shape: (N, K, 1)
+        std = torch.sqrt(var + self.epsilon)  # Shape: (N, K, 1)
+        x_normalized = (x - mean) / std  # Shape: (N, K, M)
+        y = self.gamma.unsqueeze(0).unsqueeze(0) * x_normalized + self.beta.unsqueeze(0).unsqueeze(0)
+        
+        return y 
 
 
 class FeedForwardBlock(nn.Module):
@@ -316,20 +303,17 @@ class FeedForwardBlock(nn.Module):
             hidden_dim_feedforward: int representing the hidden dimension for
                 the feedforward block
         """
-
+        
         self.linear1 = nn.Linear(inp_dim, hidden_dim_feedforward)
         self.relu = nn.ReLU()
         self.linear2 = nn.Linear(hidden_dim_feedforward, inp_dim)
 
         c1 = torch.sqrt(torch.tensor(6.) / (inp_dim + hidden_dim_feedforward))
         c2 = torch.sqrt(torch.tensor(6.) / (hidden_dim_feedforward + inp_dim))
-   
-        self.linear1.weights = torch.FloatTensor(inp_dim, hidden_dim_feedforward).uniform_(0, 1)
-        self.linear2.weights = torch.FloatTensor(hidden_dim_feedforward, inp_dim).uniform_(0, 1)
-        
-        ##########################################################################
-        #               END OF YOUR CODE                                         #
-        ##########################################################################
+
+        nn.init.uniform_(self.linear1.weight, -c1, c1)
+        nn.init.uniform_(self.linear2.weight, -c2, c2)
+
 
     def forward(self, x):
         """
@@ -344,6 +328,7 @@ class FeedForwardBlock(nn.Module):
         y = self.linear1(x)
         y = self.relu(y)
         y = self.linear2(y)
+        
         return y
 
 
@@ -390,15 +375,18 @@ class EncoderBlock(nn.Module):
         """
 
         if emb_dim % num_heads != 0:
-            raise ValueError(f"""The value emb_dim = {emb_dim} is not divisible
+            raise ValueError(
+                f"""The value emb_dim = {emb_dim} is not divisible
                              by num_heads = {num_heads}. Please select an
-                             appropriate value.""")
+                             appropriate value."""
+            )
+
         
-        self.multihead = MultiHeadAttention(num_heads, emb_dim, emb_dim)
+        self.MultiHeadBlock = MultiHeadAttention(num_heads, emb_dim, int(emb_dim/num_heads))
         self.norm1 = LayerNormalization(emb_dim)
         self.norm2 = LayerNormalization(emb_dim)
         self.feedforward = FeedForwardBlock(emb_dim, feedforward_dim)
-        self.dropout_ = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         """
@@ -409,19 +397,456 @@ class EncoderBlock(nn.Module):
             x: a Tensor of shape (N, K, M) as input sequence
         returns:
             y: a Tensor of shape (N, K, M) as the output of the forward pass
-        """
+        """       
         residual = x
 
-        out_multihead = self.multihead(x, x, x)
+        out_multihead = self.MultiHeadBlock.forward(x, x, x)
         out_multihead_residual = out_multihead + residual
 
-        out_norm1 = self.norm1(out_multihead_residual)
-        out_dropout1 = self.dropout_(out_norm1)
+        out_norm1 = self.norm1.forward(out_multihead_residual)
+        out_dropout1 = self.dropout(out_norm1)
 
-        out_mlp = self.feedforward(out_dropout1)
-        out_norm2 = self.norm2(out_mlp + out_dropout1)
-        y = self.dropout_(out_norm2)
-
+        out_mlp = self.feedforward.forward(out_dropout1)
+        out_norm2 = self.norm2.forward(out_mlp + out_dropout1)
+        y = self.dropout(out_norm2)
+        
         return y
 
 
+def get_subsequent_mask(seq):
+    """
+    An implementation of the decoder self attention mask. This will be used to
+    mask the target sequence while training the model. The input shape here is
+    (N, K) where N is the batch size and K is the sequence length.
+
+    args:
+        seq: a tensor of shape (N, K) where N is the batch size and K is the
+             length of the sequence
+    return:
+        mask: a tensor of shape (N, K, K) where N is the batch size and K is the
+              length of the sequence
+
+    Given a sequence of length K, we want to mask the weights inside the function
+    `self_attention_no_loop_batch` so that it prohibits the decoder to look ahead
+    in the future
+    """
+
+    N, K = seq.shape
+
+    mask = torch.full((N, K, K), False)
+
+    for n in range(N): 
+        for k in range(K):
+            for j in range(k):
+                mask[n, j, k] = True
+
+    return mask
+
+
+class DecoderBlock(nn.Module):
+    def __init__(self, num_heads: int, emb_dim: int, feedforward_dim: int, dropout: float):
+        super().__init__()
+        if emb_dim % num_heads != 0:
+            raise ValueError(
+                f"""The value emb_dim = {emb_dim} is not divisible
+                             by num_heads = {num_heads}. Please select an
+                             appropriate value."""
+            )
+
+        """
+        The function implements the DecoderBlock for the Transformer model. In the 
+        class we learned about encoder only model that can be used for tasks like 
+        sequence classification but for more complicated tasks like sequence to 
+        sequence we need a decoder network that can transformt the output of the 
+        encoder to a target sequence. This kind of architecture is important in 
+        tasks like language translation where we have a sequence as input and a 
+        sequence as output. 
+        
+        As shown in the Figure 1 of the paper attention is all you need
+        https://arxiv.org/pdf/1706.03762.pdf, the encoder consists of 5 components:   
+        
+        1. Masked MultiHead Attention
+        2. MultiHead Attention
+        3. FeedForward layer
+        4. Residual connections after MultiHead Attention and feedforward layer
+        5. LayerNorm        
+        
+        The Masked MultiHead Attention takes the target, masks it as per the 
+        function get_subsequent_mask and then gives the output as per the MultiHead  
+        Attention layer. Further, another Multihead Attention block here takes the  
+        encoder output and the output from Masked Multihead Attention layer giving  
+        the output that helps the model create interaction between input and 
+        targets. As this block helps in interaction between the input and target, it  
+        is also sometimes called the cross attention.
+
+        The architecture is as follows:
+        
+        inp - masked_multi_head_attention - out1 - layer_norm(inp + out1) - \
+        dropout - (out2 and enc_out) -  multi_head_attention - out3 - \
+        layer_norm(out3 + out2) - dropout - out4 - feed_forward - out5 - \
+        layer_norm(out5 + out4) - dropout - out
+        
+        Here, out1, out2, out3, out4, out5 are the corresponding outputs for the 
+        layers, enc_out is the encoder output and we add these outputs to their  
+        respective inputs for implementing residual connections.
+        
+        args:
+            num_heads: int value representing number of heads
+
+            emb_dim: int value representing embedding dimension
+
+            feedforward_dim: int representing hidden layers in the feed forward 
+                model
+
+            dropout: float representing the dropout value
+        """
+        
+        self.attention_self = MultiHeadAttention(num_heads, emb_dim, int(emb_dim/num_heads))
+        self.attention_cross = MultiHeadAttention(num_heads, emb_dim, int(emb_dim/num_heads))
+        self.feed_forward = FeedForwardBlock(emb_dim, feedforward_dim)
+        self.norm1 = LayerNormalization(emb_dim)
+        self.norm2 = LayerNormalization(emb_dim)
+        self.norm3 = LayerNormalization(emb_dim)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, dec_inp: Tensor, enc_out: Tensor, mask: Tensor = None) -> Tensor:
+
+        """
+        args:
+            dec_inp: a Tensor of shape (N, K, M)
+            enc_inp: a Tensor of shape (N, K, M)
+            mask: a Tensor of shape (N, K, K)
+
+        This function will handle the forward pass of the Decoder block. It takes
+        in input as enc_inp which is the encoder output and a tensor dec_inp which
+        is the target sequence shifted by one in case of training and an initial
+        token "BOS" during inference
+        """
+
+        out1 = self.attention_self.forward(dec_inp, dec_inp, dec_inp, mask)
+        out1_norm = self.norm1.forward(dec_inp + out1)
+        out1_norm = self.dropout(out1_norm)
+
+        out2 = self.attention_cross.forward(out1_norm, enc_out, enc_out)
+        out2_norm = self.norm2.forward(out2 + out1_norm)
+        out2_norm = self.dropout(out2_norm)
+
+        out3 = self.feed_forward.forward(out2_norm)
+        out3_norm = self.norm3.forward(out3 + out2_norm)
+        y = self.dropout(out3_norm)
+
+        return y
+
+class Encoder(nn.Module):
+    def __init__(
+        self,
+        num_heads: int,
+        emb_dim: int,
+        feedforward_dim: int,
+        num_layers: int,
+        dropout: float,
+    ):
+        """
+        The class encapsulates the implementation of the final Encoder that use
+        multiple EncoderBlock layers.
+
+        args:
+            num_heads: int representing number of heads to be used in the
+                EncoderBlock
+            emb_dim: int repreesenting embedding dimension for the Transformer
+                model
+            feedforward_dim: int representing hidden layer dimension for the
+                feed forward block
+
+        """
+
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                EncoderBlock(num_heads, emb_dim, feedforward_dim, dropout)
+                for _ in range(num_layers)
+            ]
+        )
+
+    def forward(self, src_seq: Tensor):
+        for _layer in self.layers:
+            src_seq = _layer(src_seq)
+
+        return src_seq
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self,
+        num_heads: int,
+        emb_dim: int,
+        feedforward_dim: int,
+        num_layers: int,
+        dropout: float,
+        vocab_len: int,
+    ):
+        super().__init__()
+        """
+        The Decoder takes the input from the encoder and the target
+        sequence to generate the final sequence for the output. We
+        first pass the input through stacked DecoderBlocks and then
+        project the output to vocab_len which is required to get the
+        actual sequence.
+        
+        args:
+            num_heads: Int representing number of heads in the MultiheadAttention
+            for Transformer
+            emb_dim: int representing the embedding dimension
+            of the sequence
+            feedforward_dim: hidden layers in the feed forward block
+            num_layers: int representing the number of DecoderBlock in Decoder
+            dropout: float representing the dropout in each DecoderBlock
+            vocab_len: length of the vocabulary
+        """
+
+        self.layers = nn.ModuleList(
+            [
+                DecoderBlock(num_heads, emb_dim, feedforward_dim, dropout)
+                for _ in range(num_layers)
+            ]
+        )
+        self.proj_to_vocab = nn.Linear(emb_dim, vocab_len)
+        a = (6 / (emb_dim + vocab_len)) ** 0.5
+        nn.init.uniform_(self.proj_to_vocab.weight, -a, a)
+
+    def forward(self, target_seq: Tensor, enc_out: Tensor, mask: Tensor):
+
+        out = target_seq.clone()
+        for _layer in self.layers:
+            out = _layer(out, enc_out, mask)
+        out = self.proj_to_vocab(out)
+        return out
+
+
+def position_encoding_simple(K: int, M: int) -> Tensor:
+    """
+    An implementation of the simple positional encoding using uniform intervals
+    for a sequence.
+
+    args:
+        K: int representing sequence length
+        M: int representing embedding dimension for the sequence
+
+    return:
+        y: a Tensor of shape (1, K, M)
+    """    
+    y = torch.zeros(size = (1, K, M))
+    for n in range(K): 
+        y[0,n,:] = n/K
+    
+    return y
+
+
+def position_encoding_sinusoid(K: int, M: int) -> Tensor:
+
+    """
+    An implementation of the sinousoidal positional encodings.
+
+    args:
+        K: int representing sequence length
+        M: int representing embedding dimension for the sequence
+
+    return:
+        y: a Tensor of shape (1, K, M)
+
+    """
+    
+    y = torch.zeros(1, K, M)
+    for p in range(K): 
+        i = 0
+        while (2*i + 1 <= M):
+            a = (2 * i)/M
+            a = int(a)
+            sincos_input = torch.tensor(p / 10000**a)
+            y[0, p, 2*i] = torch.sin(sincos_input)
+            if (2*i + 1 < M):
+                y[0, p, 2*i+1] = torch.cos(sincos_input)
+            i += 1
+    
+    return y
+
+
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        num_heads: int,
+        emb_dim: int,
+        feedforward_dim: int,
+        dropout: float,
+        num_enc_layers: int,
+        num_dec_layers: int,
+        vocab_len: int,
+    ):
+        super().__init__()
+
+        """
+        The class implements Transformer model with encoder and decoder. The input
+        to the model is a tensor of shape (N, K) and the output is a tensor of shape
+        (N*O, V). Here, N is the batch size, K is the input sequence length, O is  
+        the output sequence length and V is the Vocabulary size. The input is passed  
+        through shared nn.Embedding layer and then added to input positonal 
+        encodings. Similarily, the target is passed through the same nn.Embedding
+        layer and added to the target positional encodings. The only difference
+        is that we take last but one  value in the target. The summed 
+        inputs(look at the code for detials) are then sent through the encoder and  
+        decoder blocks  to get the  final output.
+        args:
+            num_heads: int representing number of heads to be used in Encoder
+                       and decoder
+            emb_dim: int representing embedding dimension of the Transformer
+            dim_feedforward: int representing number of hidden layers in the
+                             Encoder and decoder
+            dropout: a float representing probability for dropout layer
+            num_enc_layers: int representing number of encoder blocks
+            num_dec_layers: int representing number of decoder blocks
+
+        """
+        
+        self.emb_layer = nn.Embedding(vocab_len, emb_dim)
+        self.linear = nn.Linear(emb_dim, vocab_len)
+        
+        self.encoder = Encoder(num_heads, 
+                               emb_dim, 
+                               feedforward_dim, 
+                               num_enc_layers, 
+                               dropout)
+        
+        self.decoder = Decoder(num_heads,
+                               emb_dim,
+                               feedforward_dim,
+                               num_dec_layers,
+                               dropout,
+                               vocab_len)
+
+    def forward(self, ques_b: Tensor, ques_pos: Tensor, ans_b: Tensor, ans_pos: Tensor) -> Tensor:
+
+        """
+
+        An implementation of the forward pass of the Transformer.
+
+        args:
+            ques_b: Tensor of shape (N, K) that consists of input sequence of
+                the arithmetic expression
+            ques_pos: Tensor of shape (N, K, M) that consists of positional
+                encodings of the input sequence
+            ans_b: Tensor of shape (N, K) that consists of target sequence
+                of arithmetic expression
+            ans_pos: Tensor of shape (N, K, M) that consists of positonal
+                encodings of the target sequence
+
+        returns:
+            dec_out: Tensor of shape (N*O, M) where O is the size of
+                the target sequence.
+        """
+        q_emb = self.emb_layer(ques_b)
+        a_emb = self.emb_layer(ans_b)
+        q_emb_inp = q_emb + ques_pos
+        a_emb_inp = a_emb[:, :-1] + ans_pos[:, :-1]
+
+        enc_out = self.encoder(q_emb_inp)
+        mask = get_subsequent_mask(ans_b)
+        dec_out = self.decoder(a_emb_inp, enc_out, mask)
+        dec_out = dec_out.view(-1, dec_out.size(2)) 
+        return dec_out
+
+
+class AddSubDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        input_seqs,
+        target_seqs,
+        convert_str_to_tokens,
+        special_tokens,
+        emb_dim,
+        pos_encode,
+    ):
+
+        """
+        The class implements the dataloader that will be used for the toy dataset.
+
+        args:
+            input_seqs: A list of input strings
+            target_seqs: A list of output strings
+            convert_str_to_tokens: Dictionary to convert input string to tokens
+            special_tokens: A list of strings
+            emb_dim: embedding dimension of the transformer
+            pos_encode: A function to compute positional encoding for the data
+        """
+
+        self.input_seqs = input_seqs
+        self.target_seqs = target_seqs
+        self.convert_str_to_tokens = convert_str_to_tokens
+        self.emb_dim = emb_dim
+        self.special_tokens = special_tokens
+        self.pos_encode = pos_encode
+
+    def preprocess(self, inp):
+        return prepocess_input_sequence(inp, 
+                                        self.convert_str_to_tokens, 
+                                        self.special_tokens)
+
+    def __getitem__(self, idx):
+        """
+        The core fucntion to get element with index idx in the data.
+        args:
+            idx: index of the element that we need to extract from the data
+        returns:
+            preprocess_inp: A 1D tensor of length K, where K is the input sequence
+                length
+            inp_pos_enc: A tensor of shape (K, M), where K is the sequence length
+                and M is the embedding dimension
+            preprocess_out: A 1D tensor of length O, where O is the output
+                sequence length
+            out_pos_enc: A tensor of shape (O, M), where O is the sequence length
+                and M is the embedding dimension
+        """
+
+        inp = self.input_seqs[idx]
+        out = self.target_seqs[idx]
+        preprocess_inp = torch.tensor(self.preprocess(inp))
+        preprocess_out = torch.tensor(self.preprocess(out))
+        inp_pos = len(preprocess_inp)
+        inp_pos_enc = self.pos_encode(inp_pos, self.emb_dim)
+        out_pos = len(preprocess_out)
+        out_pos_enc = self.pos_encode(out_pos, self.emb_dim)
+
+        return preprocess_inp, inp_pos_enc[0], preprocess_out, out_pos_enc[0]
+
+    def __len__(self):
+        return len(self.input_seqs)
+
+
+def LabelSmoothingLoss(pred, ground):
+    """
+    args:
+        pred: predicted tensor of shape (N*O, V) where N is the batch size, O
+            is the target sequence length and V is the size of the vocab
+        ground: ground truth tensor of shape (N, O) where N is the batch size, O
+            is the target sequence
+    """
+    ground = ground.contiguous().view(-1)
+    eps = 0.1
+    n_class = pred.size(1)
+    one_hot = torch.nn.functional.one_hot(ground).to(pred.dtype)
+    one_hot = one_hot * (1 - eps) + (1 - one_hot) * eps / (n_class - 1)
+    log_prb = F.log_softmax(pred, dim=1)
+    loss = -(one_hot * log_prb).sum(dim=1)
+    loss = loss.sum()
+    return loss
+
+
+def CrossEntropyLoss(pred, ground):
+    """
+    args:
+        pred: predicted tensor of shape (N*O, V) where N is the batch size, O
+            is the target sequence length and V is the size of the vocab
+        ground: ground truth tensor of shape (N, O) where N is the batch size, O
+            is the target sequence
+    """
+    loss = F.cross_entropy(pred, ground, reduction="sum")
+    return loss
